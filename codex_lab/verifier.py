@@ -35,8 +35,8 @@ def _flutter_commands(repo: Path) -> list[list[str]] | None:
         return None
     flutter = shutil.which("flutter")
     if not flutter:
-        return [["flutter", "analyze"], ["flutter", "test"]]
-    return [[flutter, "analyze"], [flutter, "test"]]
+        return [["flutter", "analyze", "--no-fatal-infos", "--no-fatal-warnings"], ["flutter", "test"]]
+    return [[flutter, "analyze", "--no-fatal-infos", "--no-fatal-warnings"], [flutter, "test"]]
 
 
 def _single_project_command(repo: Path) -> list[str] | None:
@@ -119,9 +119,8 @@ def verify(repo: Path) -> dict:
         code, output = _run(repo, cmd)
         duration = round(__import__("time").monotonic() - started, 3)
 
-        is_flutter_analyze = (
-            len(cmd) >= 2 and cmd[-2:] == ["flutter", "analyze"]
-        ) or cmd[-1:] == ["analyze"]
+        executable = Path(cmd[0]).name.lower() if cmd else ""
+        is_flutter_analyze = "analyze" in cmd and executable in {"flutter", "flutter.bat", "flutter.cmd"}
 
         if is_flutter_analyze:
             parsed = _parse_flutter_analyze(output)

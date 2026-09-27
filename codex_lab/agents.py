@@ -271,7 +271,6 @@ def _forward_windows_console_input(proc, stop_event) -> None:
 
 def _run_antigravity_stream(info: AgentInfo, worktree: Path, prompt: str) -> dict:
     """Run one Antigravity turn through the documented machine-readable stream."""
-    timeout = os.environ.get("CODEX_LAB_ANTIGRAVITY_PRINT_TIMEOUT", "60m")
     args = [
         info.executable,
         "--print",
@@ -279,16 +278,14 @@ def _run_antigravity_stream(info: AgentInfo, worktree: Path, prompt: str) -> dic
         "--output-format",
         "stream-json",
         "--dangerously-skip-permissions",
-        "--print-timeout",
-        timeout,
     ]
     _ag_debug(
         f"launching automated stream session cwd={str(worktree)!r} "
-        f"timeout={timeout!r} prompt_chars={len(prompt)}"
+        f"prompt_chars={len(prompt)}"
     )
     _ag_debug(
         "agy command flags: --print --output-format stream-json "
-        "--dangerously-skip-permissions --print-timeout " + timeout
+        "--dangerously-skip-permissions"
     )
     started = time.monotonic()
     p = subprocess.Popen(

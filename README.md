@@ -84,13 +84,12 @@ The default `--agent antigravity` run uses Antigravity's documented headless `--
 
 The previous v7 interactive PTY implementation remains in `codex_lab/agents.py` as `_run_antigravity_interactive` for future/manual interactive experiments.
 
-Environment variable:
-- `CODEX_LAB_ANTIGRAVITY_PRINT_TIMEOUT` — Antigravity `--print-timeout`, default `60m`.
+Antigravity automated mode does not impose a `--print-timeout`; the process is allowed to run until Antigravity exits.
 
 
 ## Flutter verification (v10)
 
-For Flutter projects, `flutter analyze` diagnostics are parsed by severity. Analyzer `error` diagnostics fail verification; `warning` and `info` diagnostics are recorded but do not fail the run. The aggregate `N issues found` count is not used as the pass/fail criterion. SQLite stores `analyzer_errors`, `analyzer_warnings`, and `analyzer_infos` for each run.
+For Flutter projects, `flutter analyze --no-fatal-infos --no-fatal-warnings` is used so warnings and infos remain visible but do not make the analyzer exit non-zero. Diagnostics are parsed by severity. Analyzer `error` diagnostics fail verification; `warning` and `info` diagnostics are recorded but do not fail the run. The aggregate `N issues found` count is not used as the pass/fail criterion. SQLite stores `analyzer_errors`, `analyzer_warnings`, and `analyzer_infos` for each run.
 
 ## v10 run numbering
 
