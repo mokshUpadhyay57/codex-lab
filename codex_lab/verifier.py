@@ -98,28 +98,31 @@ def _parse_flutter_analyze(output: str) -> dict[str, int]:
 
 
 def verify(repo: Path) -> dict:
+    """Run independent verification and return command-level diagnostics."""
     commands = detect(repo)
     if not commands:
         return {
             "status": "unavailable",
             "output": "No supported test/build command could be reliably detected in the worktree.",
             "command": None,
+            "verification": [],
             "analyzer_errors": None,
             "analyzer_warnings": None,
             "analyzer_infos": None,
         }
 
-    outputs: list[str] = []
-    executed: list[list[str]] = []
+    verification: list[dict] = []
     analyzer_counts = {"errors": None, "warnings": None, "infos": None}
-    for index, cmd in enumerate(commands):
-        executed.append(cmd)
+
+    for cmd in commands:
+        started = __import__("time").monotonic()
         code, output = _run(repo, cmd)
-        outputs.append(f"$ {' '.join(cmd)}\n{output}")
+        duration = round(__import__("time").monotonic() - started, 3)
 
         is_flutter_analyze = (
             len(cmd) >= 2 and cmd[-2:] == ["flutter", "analyze"]
         ) or cmd[-1:] == ["analyze"]
+
         if is_flutter_analyze:
             parsed = _parse_flutter_analyze(output)
             analyzer_counts = {
@@ -127,45 +130,100 @@ def verify(repo: Path) -> dict:
                 "warnings": parsed["warnings"],
                 "infos": parsed["infos"],
             }
-            # Analyzer diagnostics, not the aggregate "N issues found" count,
-            # determine static-analysis failure. Warnings/info are recorded but
-            # do not fail the run. A non-zero exit with no analyzer errors is
-            # still a verifier/tool failure and therefore remains a failure.
-            if parsed["errors"] > 0 or code != 0:
-                return {
-                    "status": "failed",
-                    "output": "\n".join(outputs),
-                    "command": executed,
-                    "analyzer_errors": parsed["errors"],
-                    "analyzer_warnings": parsed["warnings"],
-                    "analyzer_infos": parsed["infos"],
-                }
+            passed = parsed["errors"] == 0 and code == 0
+            verification.append({
+                "name": "flutter analyze",
+                "command": cmd,
+                "status": "passed" if passed else "failed",
+                "exit_code": code,
+                "duration_s": duration,
+                "errors": parsed["errors"],
+                "warnings": parsed["warnings"],
+                "infos": parsed["infos"],
+                "output": output,
+            })
+            if not passed:
+                break
             continue
 
+        name = _verification_name(cmd)
         if code == 127:
-            return {
+            verification.append({
+                "name": name,
+                "command": cmd,
                 "status": "unavailable",
-                "output": "\n".join(outputs) + "\nRequired verification tool is unavailable.",
-                "command": executed,
-                "analyzer_errors": analyzer_counts["errors"],
-                "analyzer_warnings": analyzer_counts["warnings"],
-                "analyzer_infos": analyzer_counts["infos"],
-            }
-        if code != 0:
-            return {
-                "status": "failed",
-                "output": "\n".join(outputs),
-                "command": executed,
-                "analyzer_errors": analyzer_counts["errors"],
-                "analyzer_warnings": analyzer_counts["warnings"],
-                "analyzer_infos": analyzer_counts["infos"],
-            }
+                "exit_code": code,
+                "duration_s": duration,
+                "output": output,
+            })
+            break
+
+        passed = code == 0
+        verification.append({
+            "name": name,
+            "command": cmd,
+            "status": "passed" if passed else "failed",
+            "exit_code": code,
+            "duration_s": duration,
+            "output": output,
+        })
+        if not passed:
+            break
+
+    overall = "passed"
+    if any(item["status"] == "failed" for item in verification):
+        overall = "failed"
+    elif any(item["status"] == "unavailable" for item in verification):
+        overall = "unavailable"
 
     return {
-        "status": "passed",
-        "output": "\n".join(outputs),
-        "command": executed,
+        "status": overall,
+        "output": _format_verification_report(verification),
+        "command": [item["command"] for item in verification],
+        "verification": verification,
         "analyzer_errors": analyzer_counts["errors"],
         "analyzer_warnings": analyzer_counts["warnings"],
         "analyzer_infos": analyzer_counts["infos"],
     }
+
+
+def _verification_name(cmd: list[str]) -> str:
+    joined = " ".join(cmd).lower()
+    if "flutter" in joined and "test" in joined:
+        return "flutter test"
+    if "flutter" in joined and "build" in joined:
+        return "flutter build"
+    if "gradle" in joined:
+        return "gradle test"
+    if "mvn" in joined:
+        return "maven test"
+    if "npm" in joined:
+        return "npm test"
+    if "pytest" in joined:
+        return "pytest"
+    return "verification command"
+
+
+def _format_verification_report(items: list[dict]) -> str:
+    lines = ["Verification", "────────────────────────"]
+    for item in items:
+        status = item["status"].upper()
+        marker = "PASS" if status == "PASSED" else "FAIL" if status == "FAILED" else "SKIP"
+        lines.append(f"[{marker}] {item['name']}")
+        lines.append(f"       exit code: {item['exit_code']}")
+        lines.append(f"       duration: {item['duration_s']}s")
+
+        if item["name"] == "flutter analyze":
+            lines.append(f"       errors: {item['errors']}")
+            lines.append(f"       warnings: {item['warnings']}")
+            lines.append(f"       infos: {item['infos']}")
+
+        if status != "PASSED":
+            lines.append("")
+            lines.append("Failure:" if status == "FAILED" else "Unavailable:")
+            output = (item.get("output") or "").strip()
+            lines.append(output if output else "(no output)")
+
+    return "\n".join(lines)
+
+

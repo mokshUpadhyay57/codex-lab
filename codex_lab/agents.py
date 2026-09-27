@@ -286,6 +286,10 @@ def _run_antigravity_stream(info: AgentInfo, worktree: Path, prompt: str) -> dic
         f"launching automated stream session cwd={str(worktree)!r} "
         f"timeout={timeout!r} prompt_chars={len(prompt)}"
     )
+    _ag_debug(
+        "agy command flags: --print --output-format stream-json "
+        "--dangerously-skip-permissions --print-timeout " + timeout
+    )
     started = time.monotonic()
     p = subprocess.Popen(
         args,
@@ -352,6 +356,18 @@ def _run_antigravity_stream(info: AgentInfo, worktree: Path, prompt: str) -> dic
     stderr_thread.join(timeout=1)
     elapsed = round(time.monotonic() - started, 3)
     status = (result or {}).get("status") or ("ERROR" if returncode else "UNKNOWN")
+    stderr_text = "\n".join(stderr_lines)
+    permission_blocked = (
+        "required the \"command\" permission" in stderr_text.lower()
+        or "headless mode cannot prompt" in stderr_text.lower()
+        or "permission" in str((result or {}).get("error") or "").lower()
+           and "command" in str((result or {}).get("error") or "").lower()
+    )
+    if permission_blocked:
+        status = "PERMISSION_BLOCKED"
+        _ag_debug("permission-blocked tool detected; overriding AGY SUCCESS status")
+    if returncode != 0 and status == "SUCCESS":
+        status = "ERROR"
     _ag_debug(
         f"automated stream process exited returncode={returncode} status={status!r} "
         f"elapsed={elapsed}s events={session_events} tools={tool_events}"
@@ -369,7 +385,8 @@ def _run_antigravity_stream(info: AgentInfo, worktree: Path, prompt: str) -> dic
         "cached_input_tokens": (total_usage or {}).get("cache_read_tokens"),
         "stream_events": session_events,
         "tool_events": tool_events,
-        "stderr": "\n".join(stderr_lines),
+        "stderr": stderr_text,
+        "permission_blocked": permission_blocked,
         "duration_s": elapsed,
     }
 

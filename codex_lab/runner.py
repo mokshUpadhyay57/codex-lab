@@ -119,7 +119,11 @@ def run_experiment(repo: Path, prompt: str, agent_name: str = "codex") -> str:
                 print(f"{run_id}: blocked — {e}")
                 return run_id
 
-            if result["returncode"] != 0:
+            agent_failed = result["returncode"] != 0 or (
+                agent_name == "antigravity"
+                and result.get("result_status") not in (None, "SUCCESS")
+            )
+            if agent_failed:
                 failures += 1
                 update_run(conn, run_id, failures=failures)
 
@@ -139,6 +143,7 @@ def run_experiment(repo: Path, prompt: str, agent_name: str = "codex") -> str:
             usage_status = "available" if usage_seen else "unavailable"
 
             verification = verifier.verify(worktree)
+            print(verification["output"])
             update_run(conn, run_id,
                        codex_started_at=result["started_at"], codex_ended_at=result["ended_at"],
                        agent_started_at=result["started_at"], agent_ended_at=result["ended_at"],
@@ -182,6 +187,8 @@ def report(repo: Path, run_id: str) -> None:
     print(f"Total duration: {row['total_duration_s']}s\nImplementation: {row['implementation_duration_s']}s")
     print(f"Failures: {row['failures']}  Retries: {row['retries']}  Recovery: {row['recovery_attempts']}")
     print(f"Tests/build: {row['tests_status']}")
+    if row["tests_output"]:
+        print(row["tests_output"])
     if row["analyzer_errors"] is not None:
         print(f"Flutter analyze: {row['analyzer_errors']} errors, {row['analyzer_warnings']} warnings, {row['analyzer_infos']} infos")
     print(f"Files changed: {row['files_changed']}  +{row['lines_added']} / -{row['lines_deleted']}")
