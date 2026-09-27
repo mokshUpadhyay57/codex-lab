@@ -1,5 +1,5 @@
 Metadata-Version: 2.4
 Name: codex-lab
-Version: 0.1.1
+Version: 0.1.2
 Summary: Minimal experiment harness for measuring interactive coding-agent development
 Requires-Python: >=3.11

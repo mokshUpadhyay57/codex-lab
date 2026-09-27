@@ -77,3 +77,12 @@ Because the stable slot is reset before a new run, do not rely on the previous r
 ### Antigravity debugging
 
 Interactive Antigravity uses a Windows PTY bridge. Diagnostics are printed with `[antigravity-debug ...]` and appended to `~/.codex-lab/logs/antigravity-input.log`. The log records launch, PTY PID, readiness detection, prompt injection method, character count, and failures without logging the prompt contents.
+
+## Antigravity automated mode (v8)
+
+The default `--agent antigravity` run now uses Antigravity's documented headless `--print --output-format stream-json` protocol. The adapter reads the terminal `result` event, records token usage and tool-step counts, and lets `agy` exit normally; no `/exit` is required and this automated path does not use pywinpty.
+
+The previous v7 interactive PTY implementation remains in `codex_lab/agents.py` as `_run_antigravity_interactive` for future/manual interactive experiments.
+
+Environment variable:
+- `CODEX_LAB_ANTIGRAVITY_PRINT_TIMEOUT` — Antigravity `--print-timeout`, default `60m`.

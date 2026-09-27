@@ -5,6 +5,8 @@ import json
 import os
 import shutil
 import subprocess
+import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -76,18 +78,40 @@ class AgentAdapter:
         print(f"[{self.name}] starting interactive session in {worktree}")
         try:
             if self.name == "antigravity":
-                returncode = _run_antigravity_interactive(info, worktree, prompt)
+                stream = _run_antigravity_stream(info, worktree, prompt)
+                returncode = stream["returncode"]
             else:
+                stream = {}
                 p = subprocess.run(args, cwd=worktree)
                 returncode = p.returncode
         except FileNotFoundError as exc:
             raise AgentUnavailable(f"{self.name} executable could not be started: {info.executable}") from exc
         telemetry = self.collect_telemetry(before, prompt)
+        if self.name == "antigravity":
+            telemetry.update({
+                "model": stream.get("model"),
+                "input_tokens": stream.get("input_tokens"),
+                "output_tokens": stream.get("output_tokens"),
+                "total_tokens": stream.get("total_tokens"),
+                "cached_input_tokens": stream.get("cached_input_tokens"),
+                "session_files": [],
+                "human_messages": [],
+                "usage_status": "available" if stream.get("total_tokens") is not None else "unavailable",
+                "intervention_status": "not_applicable_automated",
+                "cost": None,
+                "cost_status": "unavailable",
+                "result_status": stream.get("result_status"),
+                "result_response": stream.get("result_response"),
+                "result_error": stream.get("result_error"),
+                "conversation_id": stream.get("conversation_id"),
+                "stream_events": stream.get("stream_events", 0),
+                "tool_events": stream.get("tool_events", 0),
+            })
         return {
             "returncode": returncode,
             "started_at": started_at,
             "ended_at": utc_now(),
-            "duration_s": round(time.monotonic() - started, 3),
+            "duration_s": stream.get("duration_s", round(time.monotonic() - started, 3)) if self.name == "antigravity" else round(time.monotonic() - started, 3),
             **telemetry,
         }
 
@@ -243,6 +267,110 @@ def _forward_windows_console_input(proc, stop_event) -> None:
                 proc.write(ch)
         except (EOFError, OSError, Exception):
             break
+
+
+def _run_antigravity_stream(info: AgentInfo, worktree: Path, prompt: str) -> dict:
+    """Run one Antigravity turn through the documented machine-readable stream."""
+    timeout = os.environ.get("CODEX_LAB_ANTIGRAVITY_PRINT_TIMEOUT", "60m")
+    args = [
+        info.executable,
+        "--print",
+        prompt,
+        "--output-format",
+        "stream-json",
+        "--print-timeout",
+        timeout,
+    ]
+    _ag_debug(
+        f"launching automated stream session cwd={str(worktree)!r} "
+        f"timeout={timeout!r} prompt_chars={len(prompt)}"
+    )
+    started = time.monotonic()
+    p = subprocess.Popen(
+        args,
+        cwd=worktree,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+    )
+    result = None
+    model = None
+    total_usage = None
+    conversation_id = None
+    session_events = 0
+    tool_events = 0
+    stderr_lines: list[str] = []
+
+    def read_stderr() -> None:
+        if p.stderr is None:
+            return
+        for line in p.stderr:
+            line = line.rstrip("\r\n")
+            if line:
+                stderr_lines.append(line)
+                _ag_debug(f"agy stderr: {line[:1000]}")
+
+    stderr_thread = threading.Thread(target=read_stderr, name="antigravity-stderr", daemon=True)
+    stderr_thread.start()
+    if p.stdout is not None:
+        for raw_line in p.stdout:
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                _ag_debug(f"non-JSON stdout line ignored: {line[:500]}")
+                continue
+            session_events += 1
+            event_type = event.get("event")
+            if event_type == "init":
+                init = event.get("init") or {}
+                conversation_id = event.get("conversation_id") or conversation_id
+                model = init.get("model") or model
+                _ag_debug(
+                    f"stream init conversation_id={conversation_id!r} model={model!r} "
+                    f"permission_mode={init.get('permission_mode')!r}"
+                )
+            elif event_type == "step_update":
+                step = event.get("step_update") or {}
+                if step.get("step_type") == "tool":
+                    tool_events += 1
+            elif event_type == "result":
+                result = event.get("result") or {}
+                conversation_id = result.get("conversation_id") or conversation_id
+                total_usage = result.get("usage") or total_usage
+                _ag_debug(
+                    f"result event detected status={result.get('status')!r} "
+                    f"turns={result.get('num_turns')!r} duration={result.get('duration_seconds')!r}"
+                )
+    returncode = p.wait()
+    stderr_thread.join(timeout=1)
+    elapsed = round(time.monotonic() - started, 3)
+    status = (result or {}).get("status") or ("ERROR" if returncode else "UNKNOWN")
+    _ag_debug(
+        f"automated stream process exited returncode={returncode} status={status!r} "
+        f"elapsed={elapsed}s events={session_events} tools={tool_events}"
+    )
+    return {
+        "returncode": returncode,
+        "result_status": status,
+        "result_response": (result or {}).get("response"),
+        "result_error": (result or {}).get("error"),
+        "model": model,
+        "conversation_id": conversation_id,
+        "input_tokens": (total_usage or {}).get("input_tokens"),
+        "output_tokens": (total_usage or {}).get("output_tokens"),
+        "total_tokens": (total_usage or {}).get("total_tokens"),
+        "cached_input_tokens": (total_usage or {}).get("cache_read_tokens"),
+        "stream_events": session_events,
+        "tool_events": tool_events,
+        "stderr": "\n".join(stderr_lines),
+        "duration_s": elapsed,
+    }
 
 
 def _run_antigravity_interactive(info: AgentInfo, worktree: Path, prompt: str) -> int:
