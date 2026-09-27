@@ -1,0 +1,226 @@
+from __future__ import annotations
+
+import ctypes
+import json
+import os
+import shutil
+import subprocess
+import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+class AgentUnavailable(RuntimeError):
+    pass
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _is_windows_admin() -> bool:
+    if os.name != "nt":
+        return False
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except (AttributeError, OSError):
+        return False
+
+
+@dataclass(frozen=True)
+class AgentInfo:
+    name: str
+    executable: str
+    version: str
+    help_text: str
+
+
+class AgentAdapter:
+    name = "agent"
+
+    def inspect(self) -> AgentInfo:
+        raise NotImplementedError
+
+    def launch_args(self, info: AgentInfo, prompt: str) -> list[str]:
+        raise NotImplementedError
+
+    def collect_telemetry(self, before: dict[str, int], prompt: str) -> dict:
+        return {
+            "model": None,
+            "input_tokens": None,
+            "output_tokens": None,
+            "total_tokens": None,
+            "cached_input_tokens": None,
+            "session_files": [],
+            "human_messages": [],
+            "usage_status": "unavailable",
+            "intervention_status": "unavailable",
+            "cost": None,
+            "cost_status": "unavailable",
+        }
+
+    def snapshot(self) -> dict[str, int]:
+        return {}
+
+    def run(self, worktree: Path, prompt: str) -> dict:
+        info = self.inspect()
+        before = self.snapshot()
+        started = time.monotonic()
+        started_at = utc_now()
+        args = self.launch_args(info, prompt)
+        print(f"[{self.name}] starting interactive session in {worktree}")
+        if self.name == "antigravity":
+            print(f"[{self.name}] enter the initial prompt in the TUI:\n\n{prompt}\n")
+        try:
+            p = subprocess.run(args, cwd=worktree)
+        except FileNotFoundError as exc:
+            raise AgentUnavailable(f"{self.name} executable could not be started: {info.executable}") from exc
+        telemetry = self.collect_telemetry(before, prompt)
+        return {
+            "returncode": p.returncode,
+            "started_at": started_at,
+            "ended_at": utc_now(),
+            "duration_s": round(time.monotonic() - started, 3),
+            **telemetry,
+        }
+
+
+def _inspect(executable_name: str) -> AgentInfo:
+    exe = shutil.which(executable_name)
+    if not exe:
+        raise AgentUnavailable(f"{executable_name} executable not found on PATH")
+    version = subprocess.run([exe, "--version"], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT).stdout.strip()
+    help_out = subprocess.run([exe, "--help"], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT).stdout
+    return AgentInfo(executable_name, exe, version, help_out)
+
+
+class CodexAdapter(AgentAdapter):
+    name = "codex"
+
+    def inspect(self) -> AgentInfo:
+        return _inspect("codex")
+
+    def launch_args(self, info: AgentInfo, prompt: str) -> list[str]:
+        args = [info.executable]
+        if os.name == "nt" and _is_windows_admin() and "--no-daemon" in info.help_text:
+            args.append("--no-daemon")
+        args.append(prompt)
+        return args
+
+    def _rollouts(self) -> list[Path]:
+        root = Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser() / "sessions"
+        if not root.exists():
+            return []
+        return sorted(root.glob("*/*/*/rollout-*.jsonl"), key=lambda p: p.stat().st_mtime_ns)
+
+    def snapshot(self) -> dict[str, int]:
+        return {str(p): p.stat().st_mtime_ns for p in self._rollouts()}
+
+    def collect_telemetry(self, before: dict[str, int], prompt: str) -> dict:
+        candidates = []
+        for p in self._rollouts():
+            try:
+                mtime = p.stat().st_mtime_ns
+            except OSError:
+                continue
+            if str(p) not in before or mtime > before[str(p)]:
+                candidates.append(p)
+
+        model = None
+        input_tokens = output_tokens = total_tokens = cached = None
+        humans = []
+        expected = " ".join(prompt.split())
+        initial_consumed = False
+        for path in candidates:
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                continue
+            for line in lines:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if record.get("type") == "session_meta":
+                    model = (record.get("payload") or {}).get("model") or model
+                if record.get("type") != "event_msg":
+                    continue
+                payload = record.get("payload") or {}
+                typ = payload.get("type")
+                if typ == "token_count":
+                    usage = (payload.get("info") or {}).get("total_token_usage") or {}
+                    input_tokens = usage.get("input_tokens", input_tokens)
+                    output_tokens = usage.get("output_tokens", output_tokens)
+                    total_tokens = usage.get("total_tokens", total_tokens)
+                    cached = usage.get("cached_input_tokens", cached)
+                elif typ == "user_message":
+                    message = str(payload.get("message") or "")
+                    if not initial_consumed and expected and " ".join(message.split()) == expected:
+                        initial_consumed = True
+                        continue
+                    if not initial_consumed and not expected:
+                        initial_consumed = True
+                        continue
+                    humans.append({"at": record.get("timestamp"), "message": message, "type": "human_input"})
+        return {
+            "model": model,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
+            "cached_input_tokens": cached,
+            "session_files": [str(p) for p in candidates],
+            "human_messages": humans,
+            "usage_status": "available" if total_tokens is not None else "unavailable",
+            "intervention_status": "available",
+            "cost": None,
+            "cost_status": "unavailable",
+        }
+
+
+class ClaudeAdapter(AgentAdapter):
+    name = "claude"
+
+    def inspect(self) -> AgentInfo:
+        return _inspect("claude")
+
+    def launch_args(self, info: AgentInfo, prompt: str) -> list[str]:
+        # Anthropic documents `claude "query"` as starting the interactive REPL.
+        return [info.executable, prompt]
+
+
+class AntigravityAdapter(AgentAdapter):
+    name = "antigravity"
+
+    def inspect(self) -> AgentInfo:
+        return _inspect("agy")
+
+    def launch_args(self, info: AgentInfo, prompt: str) -> list[str]:
+        # `agy` launches the documented interactive TUI. Its documented -p mode is
+        # headless, so do not silently use it: the experiment requires interaction.
+        return [info.executable]
+
+
+ADAPTERS = {
+    "codex": CodexAdapter,
+    "claude": ClaudeAdapter,
+    "antigravity": AntigravityAdapter,
+}
+
+
+def get_adapter(name: str) -> AgentAdapter:
+    try:
+        return ADAPTERS[name]()
+    except KeyError as exc:
+        raise AgentUnavailable(f"unsupported agent: {name}; choose from {', '.join(ADAPTERS)}") from exc
+
+
+def inspect_all() -> dict:
+    result = {}
+    for name, cls in ADAPTERS.items():
+        try:
+            info = cls().inspect()
+            result[name] = {"available": True, "path": info.executable, "version": info.version}
+        except AgentUnavailable as exc:
+            result[name] = {"available": False, "reason": str(exc)}
+    return result

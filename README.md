@@ -1,0 +1,68 @@
+# codex-lab
+
+Minimal experiment harness for measuring **interactive coding-agent** development on an isolated Git worktree.
+
+## Commands
+
+```bash
+python -m venv .venv
+. .venv/bin/activate
+pip install -e .
+
+codex-lab doctor
+codex-lab run --repo ~/projects/lockify --prompt "Add creator subscriptions..."
+codex-lab report RUN-001 --repo ~/projects/lockify
+codex-lab intervene RUN-001 --repo ~/projects/lockify --reason "I clarified the subscription expiry rule"
+```
+
+`run`:
+1. refuses a dirty source repository;
+2. creates `codex-lab/RUN-XXX` as a separate Git worktree;
+3. starts the normal interactive `codex` command inside that worktree;
+4. independently runs a detected test command after Codex exits;
+5. retries failed verification up to 3 times with a recovery prompt;
+6. records results in `~/.codex-lab/runs.sqlite3` (or `$CODEX_LAB_DB`).
+
+The source repository is not modified by the database.
+
+The source branch is never checked out or modified by the harness.
+
+## Measurement rules
+
+- `total_duration`: wall-clock harness time.
+- `implementation_duration`: time the interactive Codex process was running. Planning/human time is not guessed.
+- failures/retries/recovery: recorded from Codex process failures and independent verifier failures.
+- tests/build: `./gradlew test`, `./mvnw test`, `mvn test`, `npm test`, or `python -m pytest`, whichever is detected first.
+- files/lines: Git diff in the experiment worktree.
+- commits: Git history visible from the worktree; exact experiment-only commit attribution is intentionally not guessed.
+- interventions: only explicit `codex-lab intervene` calls are counted.
+- model/tokens/cost: unavailable unless a reliable telemetry source is integrated; no estimates.
+
+## Important limitation
+
+The interactive Codex UI is intentionally left intact. `codex-lab` does not try to parse terminal keystrokes, infer when you personally intervened, or inject undocumented Codex flags. The current implementation starts the installed `codex` executable with the task as its positional prompt. Before doing so, `doctor`/runtime discovery checks whether `codex` exists.
+
+If `codex` is not installed in the environment where `codex-lab` is executed, the run is recorded as `blocked` rather than pretending an experiment occurred.
+
+
+## Agents
+
+`codex-lab` uses an agent adapter boundary so the experiment harness is not tied to one vendor.
+
+Supported interactive agents:
+
+- `codex` — launches the installed Codex CLI interactively. On elevated Windows terminals, it uses `--no-daemon` only when the installed CLI advertises that flag.
+- `claude` — launches Claude Code as `claude "<prompt>"`, which Anthropic documents as an interactive REPL with an initial prompt.
+- `antigravity` — launches the documented `agy` interactive TUI. The initial prompt is printed for you to enter; `-p` is deliberately not used because that is Antigravity's headless mode.
+
+Run: `codex-lab run --agent codex|claude|antigravity --repo <repo> --prompt "..."`
+
+The Git worktree, independent verifier, SQLite metrics, diff/commit measurements, and reporting are shared across agents. Agent-specific telemetry is collected only when the agent exposes a reliable machine-readable source; otherwise it is recorded as unavailable.
+
+## Antigravity workspace trust
+
+`codex-lab` uses a **stable worktree path per repository and agent** instead of generating a random temporary directory for every run. This matters for Antigravity: a new absolute workspace path can trigger Workspace Trust setup again. The first Antigravity run for a repository/agent pair may therefore ask you to trust the workspace once; later runs reuse the same path.
+
+The Git branch remains unique per experiment (`codex-lab/RUN-XXX`), so experiments remain isolated even though the filesystem path is reused. The default stable workspace root is `~/.codex-lab/workspaces`; override it with `CODEX_LAB_WORKTREE_ROOT` if needed.
+
+Because the stable slot is reset before a new run, do not rely on the previous run's uncommitted files remaining in that slot. Preserve anything you need before starting another experiment.
