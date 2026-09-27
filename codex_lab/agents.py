@@ -194,126 +194,81 @@ class ClaudeAdapter(AgentAdapter):
         # Anthropic documents `claude "query"` as starting the interactive REPL.
         return [info.executable, prompt]
 
-def _inject_windows_console_input(text: str) -> bool:
-    """Inject keyboard events into the current Windows console input buffer.
-
-    The child `agy` process inherits the same console as codex-lab, so input
-    events written here are consumed by the interactive TUI without putting a
-    Python PTY proxy between agy and the user's terminal.
-    """
+def _send_windows_keyboard_text(text: str) -> bool:
+    """Type text into the foreground terminal using the Windows input API."""
     if os.name != "nt":
         return False
 
-    STD_INPUT_HANDLE = -10
-    KEY_EVENT = 0x0001
+    class KEYBDINPUT(ctypes.Structure):
+        _fields_ = [
+            ("wVk", ctypes.c_ushort),
+            ("wScan", ctypes.c_ushort),
+            ("dwFlags", ctypes.c_uint32),
+            ("time", ctypes.c_uint32),
+            ("dwExtraInfo", ctypes.c_void_p),
+        ]
+
+    class INPUT_UNION(ctypes.Union):
+        _fields_ = [("ki", KEYBDINPUT)]
+
+    class INPUT(ctypes.Structure):
+        _fields_ = [("type", ctypes.c_uint32), ("u", INPUT_UNION)]
+
+    KEYEVENTF_UNICODE = 0x0004
+    KEYEVENTF_KEYUP = 0x0002
+    INPUT_KEYBOARD = 1
     VK_RETURN = 0x0D
-    SHIFT_PRESSED = 0x0010
-    LEFT_ALT_PRESSED = 0x0002
-
-    class CHAR_UNION(ctypes.Union):
-        _fields_ = [
-            ("UnicodeChar", ctypes.c_wchar),
-            ("AsciiChar", ctypes.c_char),
-        ]
-
-    class KEY_EVENT_RECORD(ctypes.Structure):
-        _fields_ = [
-            ("bKeyDown", ctypes.c_int),
-            ("wRepeatCount", ctypes.c_ushort),
-            ("wVirtualKeyCode", ctypes.c_ushort),
-            ("wVirtualScanCode", ctypes.c_ushort),
-            ("uChar", CHAR_UNION),
-            ("dwControlKeyState", ctypes.c_uint32),
-        ]
-
-    class EVENT_UNION(ctypes.Union):
-        _fields_ = [("KeyEvent", KEY_EVENT_RECORD)]
-
-    class INPUT_RECORD(ctypes.Structure):
-        _fields_ = [
-            ("EventType", ctypes.c_ushort),
-            ("Event", EVENT_UNION),
-        ]
-
-    kernel32 = ctypes.windll.kernel32
-    handle = kernel32.GetStdHandle(STD_INPUT_HANDLE)
-    if not handle or handle == ctypes.c_void_p(-1).value:
-        return False
-
-    mode = ctypes.c_uint32()
-    if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
-        return False
 
     events = []
-
-    def add_key(ch: str, *, vk: int = 0, control_state: int = 0) -> None:
-        down = INPUT_RECORD()
-        down.EventType = KEY_EVENT
-        down.Event.KeyEvent.bKeyDown = 1
-        down.Event.KeyEvent.wRepeatCount = 1
-        down.Event.KeyEvent.wVirtualKeyCode = vk
-        down.Event.KeyEvent.wVirtualScanCode = 0
-        down.Event.KeyEvent.uChar.UnicodeChar = ch
-        down.Event.KeyEvent.dwControlKeyState = control_state
-
-        up = INPUT_RECORD()
-        up.EventType = KEY_EVENT
-        up.Event.KeyEvent.bKeyDown = 0
-        up.Event.KeyEvent.wRepeatCount = 1
-        up.Event.KeyEvent.wVirtualKeyCode = vk
-        up.Event.KeyEvent.wVirtualScanCode = 0
-        up.Event.KeyEvent.uChar.UnicodeChar = ch
-        up.Event.KeyEvent.dwControlKeyState = control_state
-        events.extend((down, up))
-
     for ch in text:
         if ch == "\n":
-            # Antigravity documents Shift+Enter as the prompt newline action.
-            add_key("\r", vk=VK_RETURN, control_state=SHIFT_PRESSED)
-        else:
-            add_key(ch)
+            # Keep multiline prompts as explicit Enter/newline input.
+            vk = KEYBDINPUT(0, VK_RETURN, 0, 0, None)
+            events.append(INPUT(INPUT_KEYBOARD, INPUT_UNION(ki=vk)))
+            events.append(INPUT(INPUT_KEYBOARD, INPUT_UNION(ki=KEYBDINPUT(0, VK_RETURN, KEYEVENTF_KEYUP, 0, None))))
+            continue
+        down = KEYBDINPUT(0, ord(ch), KEYEVENTF_UNICODE, 0, None)
+        up = KEYBDINPUT(0, ord(ch), KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, 0, None)
+        events.append(INPUT(INPUT_KEYBOARD, INPUT_UNION(ki=down)))
+        events.append(INPUT(INPUT_KEYBOARD, INPUT_UNION(ki=up)))
 
-    # Submit the initial prompt.
-    add_key("\r", vk=VK_RETURN)
+    # Submit the prompt with a real Enter key.
+    events.append(INPUT(INPUT_KEYBOARD, INPUT_UNION(ki=KEYBDINPUT(VK_RETURN, 0, 0, 0, None))))
+    events.append(INPUT(INPUT_KEYBOARD, INPUT_UNION(ki=KEYBDINPUT(VK_RETURN, 0, KEYEVENTF_KEYUP, 0, None))))
 
-    array_type = INPUT_RECORD * len(events)
+    array_type = INPUT * len(events)
     records = array_type(*events)
-    written = ctypes.c_uint32()
-    ok = kernel32.WriteConsoleInputW(
-        handle,
-        ctypes.byref(records),
-        len(events),
-        ctypes.byref(written),
-    )
-    return bool(ok and written.value == len(events))
+    sent = ctypes.windll.user32.SendInput(len(events), ctypes.byref(records), ctypes.sizeof(INPUT))
+    return sent == len(events)
 
 
 def _run_antigravity_interactive(info: AgentInfo, worktree: Path, prompt: str) -> int:
-    """Launch the real agy TUI directly and inject the first prompt.
+    """Launch the real agy TUI directly and type the first prompt into it.
 
-    Windows normally gives child processes launched from PowerShell the same
-    console. We keep that arrangement intact: agy owns the terminal directly,
-    while WriteConsoleInputW queues the initial prompt into the shared console
-    input buffer. This avoids the v4 pywinpty read/print polling loop, which was
-    responsible for noticeable TUI latency and also did not proxy later human
-    keystrokes correctly.
+    Unlike v4, there is no PTY read/print loop. Unlike v5's console-buffer
+    injection, this uses Windows' normal keyboard-input path, which works with
+    Windows Terminal/PowerShell's ConPTY-backed console sessions.
     """
-    if os.name == "nt":
-        try:
-            p = subprocess.Popen([info.executable], cwd=worktree)
-        except FileNotFoundError as exc:
-            raise AgentUnavailable(f"agy executable could not be started: {info.executable}") from exc
-
-        # Console input is queued, so agy can consume it after its TUI finishes
-        # initializing. No output forwarding or polling is required.
-        if not _inject_windows_console_input(prompt):
-            # The process is still a normal interactive agy process. Do not
-            # terminate it merely because automatic prompt injection is not
-            # available (for example when stdin is redirected).
-            print("[antigravity] automatic prompt injection unavailable; enter the initial prompt in the TUI.")
+    if os.name != "nt":
+        p = subprocess.Popen([info.executable], cwd=worktree)
         return p.wait()
 
-    p = subprocess.Popen([info.executable], cwd=worktree)
+    try:
+        p = subprocess.Popen([info.executable], cwd=worktree)
+    except FileNotFoundError as exc:
+        raise AgentUnavailable(f"agy executable could not be started: {info.executable}") from exc
+
+    # Give the TUI time to create its prompt panel. The keyboard events are then
+    # indistinguishable from the user typing into the prompt box.
+    import threading
+
+    def inject() -> None:
+        time.sleep(float(os.environ.get("CODEX_LAB_ANTIGRAVITY_PROMPT_DELAY", "1.5")))
+        if p.poll() is None:
+            if not _send_windows_keyboard_text(prompt):
+                print("[antigravity] automatic prompt injection failed; enter the initial prompt in the TUI.")
+
+    threading.Thread(target=inject, name="antigravity-prompt-injector", daemon=True).start()
     return p.wait()
 
 

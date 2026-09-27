@@ -53,7 +53,9 @@ Supported interactive agents:
 
 - `codex` — launches the installed Codex CLI interactively. On elevated Windows terminals, it uses `--no-daemon` only when the installed CLI advertises that flag.
 - `claude` — launches Claude Code as `claude "<prompt>"`, which Anthropic documents as an interactive REPL with an initial prompt.
-- `antigravity` — launches the documented `agy` interactive TUI. The initial prompt is printed for you to enter; `-p` is deliberately not used because that is Antigravity's headless mode.
+- `antigravity` — launches the documented `agy` interactive TUI directly in the current Windows terminal and automatically types/submits the initial prompt using the Windows keyboard input API. `-p` is deliberately not used because that is Antigravity's headless mode. The TUI is not proxied through Python, so normal interactive rendering and later human input remain direct.
+
+On Windows, the automatic prompt injection waits 1.5 seconds by default for the TUI prompt panel to initialize. Override with `CODEX_LAB_ANTIGRAVITY_PROMPT_DELAY` (seconds) if your environment starts Antigravity more slowly or quickly.
 
 Run: `codex-lab run --agent codex|claude|antigravity --repo <repo> --prompt "..."`
 
