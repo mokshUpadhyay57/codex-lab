@@ -3,6 +3,7 @@ pyproject.toml
 codex_lab/__init__.py
 codex_lab/__main__.py
 codex_lab/agents.py
+codex_lab/antigravity_stream.py
 codex_lab/cli.py
 codex_lab/database.py
 codex_lab/git.py

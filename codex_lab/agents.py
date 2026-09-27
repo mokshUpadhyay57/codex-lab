@@ -15,6 +15,17 @@ class AgentUnavailable(RuntimeError):
     pass
 
 
+
+def _send_stream_prompt(proc, prompt):
+    """Send the initial user turn to an Antigravity stream-json session."""
+    import json
+    payload = {
+        "event": "user",
+        "message": {"content": prompt},
+    }
+    proc.stdin.write(json.dumps(payload) + "\n")
+    proc.stdin.flush()
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
