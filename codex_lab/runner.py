@@ -48,14 +48,18 @@ def stable_worktree_path(repo: Path, agent_name: str) -> Path:
 
 
 def prepare_worktree_slot(repo: Path, worktree: Path) -> None:
-    """Remove a previous experiment worktree occupying the stable slot."""
+    """Remove a previous experiment worktree occupying the stable slot.
+
+    Git can retain a worktree registration after its directory is manually
+    deleted. Prune those registrations before checking/reusing the stable slot.
+    """
     worktree = worktree.resolve()
-    listed = git.run(repo, "worktree", "list", "--porcelain", check=False)
-    registered = any(line == f"worktree {worktree}" for line in listed.splitlines())
-    if registered:
-        git.run(repo, "worktree", "remove", "--force", str(worktree))
+    git.prune_worktrees(repo)
+    if git.worktree_registered(repo, worktree):
+        git.remove_worktree(repo, worktree)
     elif worktree.exists():
         shutil.rmtree(worktree)
+    git.prune_worktrees(repo)
     worktree.parent.mkdir(parents=True, exist_ok=True)
 
 
@@ -74,6 +78,9 @@ def run_experiment(repo: Path, prompt: str, agent_name: str = "codex") -> str:
     started_at = now()
     base_commit = git.run(repo, "rev-parse", "HEAD")
     git.create_worktree(repo, worktree, branch)
+    # Antigravity must trust the exact generated workspace before its interactive
+    # TUI starts. This does not alter agent permission rules.
+    agent.prepare_workspace(worktree)
     insert_run(conn, {
         "run_id": run_id, "repo": str(repo), "worktree": str(worktree), "prompt": prompt, "agent": agent_name,
         "status": "running", "started_at": started_at, "base_commit": base_commit,

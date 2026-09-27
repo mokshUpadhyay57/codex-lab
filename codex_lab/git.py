@@ -20,6 +20,23 @@ def ensure_clean(repo: Path) -> None:
         raise GitError("repository has uncommitted changes; refusing to create an experiment from a dirty tree")
 
 
+def prune_worktrees(repo: Path) -> None:
+    """Remove stale Git worktree registrations without deleting live worktrees."""
+    run(repo, "worktree", "prune")
+
+
+def worktree_registered(repo: Path, worktree: Path) -> bool:
+    target = str(worktree.resolve())
+    listed = run(repo, "worktree", "list", "--porcelain", check=False)
+    return any(line == f"worktree {target}" for line in listed.splitlines())
+
+
+def remove_worktree(repo: Path, worktree: Path) -> None:
+    """Remove a registered worktree and its Git metadata when present."""
+    if worktree_registered(repo, worktree):
+        run(repo, "worktree", "remove", "--force", str(worktree))
+
+
 def create_worktree(repo: Path, worktree: Path, branch: str) -> None:
     run(repo, "worktree", "add", "-b", branch, str(worktree))
 

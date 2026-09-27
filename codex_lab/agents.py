@@ -39,6 +39,10 @@ class AgentInfo:
 class AgentAdapter:
     name = "agent"
 
+    def prepare_workspace(self, worktree: Path) -> None:
+        """Perform agent-specific workspace setup before launching the agent."""
+        return None
+
     def inspect(self) -> AgentInfo:
         raise NotImplementedError
 
@@ -194,6 +198,60 @@ class AntigravityAdapter(AgentAdapter):
 
     def inspect(self) -> AgentInfo:
         return _inspect("agy")
+
+    def prepare_workspace(self, worktree: Path) -> None:
+        """Persist this exact experiment workspace in Antigravity's trust list.
+
+        Antigravity CLI stores its Windows workspace settings in
+        ~/.gemini/antigravity-cli/settings.json. We only add the exact worktree
+        to the existing `trustedWorkspaces` array; all other settings are kept.
+        """
+        settings_path = Path.home() / ".gemini" / "antigravity-cli" / "settings.json"
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if settings_path.exists():
+            try:
+                raw = settings_path.read_text(encoding="utf-8")
+                settings = json.loads(raw)
+            except (OSError, json.JSONDecodeError) as exc:
+                raise AgentUnavailable(
+                    f"could not read Antigravity settings {settings_path}: {exc}"
+                ) from exc
+            if not isinstance(settings, dict):
+                raise AgentUnavailable(f"Antigravity settings must be a JSON object: {settings_path}")
+        else:
+            settings = {}
+
+        trusted = settings.get("trustedWorkspaces")
+        if trusted is None:
+            trusted = []
+        if not isinstance(trusted, list):
+            raise AgentUnavailable(
+                f"Antigravity settings 'trustedWorkspaces' must be an array: {settings_path}"
+            )
+
+        workspace = str(worktree.resolve())
+        # Compare normalized paths so slash/case differences do not create duplicates on Windows.
+        def normalize(path: object) -> str:
+            return os.path.normcase(os.path.normpath(str(path)))
+
+        if not any(normalize(item) == normalize(workspace) for item in trusted):
+            trusted.append(workspace)
+            settings["trustedWorkspaces"] = trusted
+            temp = settings_path.with_suffix(".json.tmp")
+            try:
+                temp.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                os.replace(temp, settings_path)
+            except OSError as exc:
+                try:
+                    temp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                raise AgentUnavailable(
+                    f"could not update Antigravity settings {settings_path}: {exc}"
+                ) from exc
+
+        print(f"[antigravity] trusted workspace: {workspace}")
 
     def launch_args(self, info: AgentInfo, prompt: str) -> list[str]:
         # `agy` launches the documented interactive TUI. Its documented -p mode is

@@ -61,8 +61,12 @@ The Git worktree, independent verifier, SQLite metrics, diff/commit measurements
 
 ## Antigravity workspace trust
 
-`codex-lab` uses a **stable worktree path per repository and agent** instead of generating a random temporary directory for every run. This matters for Antigravity: a new absolute workspace path can trigger Workspace Trust setup again. The first Antigravity run for a repository/agent pair may therefore ask you to trust the workspace once; later runs reuse the same path.
+For Antigravity runs, `codex-lab` uses a **stable worktree path per repository and agent** instead of generating a random temporary directory for every run. Before launching `agy`, it adds that exact path to:
 
-The Git branch remains unique per experiment (`codex-lab/RUN-XXX`), so experiments remain isolated even though the filesystem path is reused. The default stable workspace root is `~/.codex-lab/workspaces`; override it with `CODEX_LAB_WORKTREE_ROOT` if needed.
+`~/.gemini/antigravity-cli/settings.json` → `trustedWorkspaces`
+
+Existing Antigravity settings are preserved, duplicate workspace entries are avoided, and the file is updated atomically. No headless mode or `--dangerously-skip-permissions` flag is used.
+
+The Git branch remains unique per experiment (`codex-lab/RUN-XXX`), so experiments remain isolated even though the filesystem path is reused. Before reuse, `codex-lab` runs `git worktree prune` and removes any stale registration occupying the stable slot. The default stable workspace root is `~/.codex-lab/workspaces`; override it with `CODEX_LAB_WORKTREE_ROOT` if needed.
 
 Because the stable slot is reset before a new run, do not rely on the previous run's uncommitted files remaining in that slot. Preserve anything you need before starting another experiment.
