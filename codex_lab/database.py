@@ -24,6 +24,9 @@ CREATE TABLE IF NOT EXISTS runs (
     recovery_attempts INTEGER NOT NULL DEFAULT 0,
     tests_status TEXT,
     tests_output TEXT,
+    analyzer_errors INTEGER,
+    analyzer_warnings INTEGER,
+    analyzer_infos INTEGER,
     files_changed INTEGER,
     lines_added INTEGER,
     lines_deleted INTEGER,
@@ -70,6 +73,9 @@ def connect(path: Path) -> sqlite3.Connection:
         "usage_status": "TEXT",
         "cost_status": "TEXT",
         "session_files": "TEXT",
+        "analyzer_errors": "INTEGER",
+        "analyzer_warnings": "INTEGER",
+        "analyzer_infos": "INTEGER",
     }
     for name, kind in migrations.items():
         if name not in existing:

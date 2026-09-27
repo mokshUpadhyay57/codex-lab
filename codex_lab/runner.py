@@ -13,7 +13,7 @@ from . import agents, git, verifier
 from .database import add_intervention, connect, get_interventions, get_run, insert_run, update_run
 
 MAX_RETRIES = 3
-RUN_DB_FILENAME = "runs-v9.sqlite3"
+RUN_DB_FILENAME = "runs-v10.sqlite3"
 
 
 def now() -> str:
@@ -143,6 +143,9 @@ def run_experiment(repo: Path, prompt: str, agent_name: str = "codex") -> str:
                        codex_started_at=result["started_at"], codex_ended_at=result["ended_at"],
                        agent_started_at=result["started_at"], agent_ended_at=result["ended_at"],
                        tests_status=verification["status"], tests_output=verification["output"],
+                       analyzer_errors=verification.get("analyzer_errors"),
+                       analyzer_warnings=verification.get("analyzer_warnings"),
+                       analyzer_infos=verification.get("analyzer_infos"),
                        agent=agent_name,
                        model=models[-1] if models else None, input_tokens=usage_total["input_tokens"] if usage_seen else None,
                        output_tokens=usage_total["output_tokens"] if usage_seen else None,
@@ -179,6 +182,8 @@ def report(repo: Path, run_id: str) -> None:
     print(f"Total duration: {row['total_duration_s']}s\nImplementation: {row['implementation_duration_s']}s")
     print(f"Failures: {row['failures']}  Retries: {row['retries']}  Recovery: {row['recovery_attempts']}")
     print(f"Tests/build: {row['tests_status']}")
+    if row["analyzer_errors"] is not None:
+        print(f"Flutter analyze: {row['analyzer_errors']} errors, {row['analyzer_warnings']} warnings, {row['analyzer_infos']} infos")
     print(f"Files changed: {row['files_changed']}  +{row['lines_added']} / -{row['lines_deleted']}")
     print(f"Commits: {row['commits']}\nModel: {row['model'] or 'unavailable'}")
     print(f"Tokens: {row['total_tokens'] if row['total_tokens'] is not None else 'unavailable'} ({row['usage_status'] or 'unknown'})")

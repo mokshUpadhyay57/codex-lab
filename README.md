@@ -78,7 +78,7 @@ Because the stable slot is reset before a new run, do not rely on the previous r
 
 Interactive Antigravity uses a Windows PTY bridge. Diagnostics are printed with `[antigravity-debug ...]` and appended to `~/.codex-lab/logs/antigravity-input.log`. The log records launch, PTY PID, readiness detection, prompt injection method, character count, and failures without logging the prompt contents.
 
-## Antigravity automated mode (v9)
+## Antigravity automated mode (v10)
 
 The default `--agent antigravity` run uses Antigravity's documented headless `--print --output-format stream-json` protocol with `--dangerously-skip-permissions`. The adapter reads the terminal `result` event, records token usage and tool-step counts, and lets `agy` exit normally; no `/exit` is required and this automated path does not use pywinpty.
 
@@ -88,6 +88,10 @@ Environment variable:
 - `CODEX_LAB_ANTIGRAVITY_PRINT_TIMEOUT` — Antigravity `--print-timeout`, default `60m`.
 
 
-## v9 run numbering
+## Flutter verification (v10)
 
-v9 uses a version-scoped SQLite database (`~/.codex-lab/runs-v9.sqlite3`). A fresh v9 installation therefore starts at `RUN-001`; subsequent v9 runs increment from there without inheriting v8 numbering. The previous database is not deleted.
+For Flutter projects, `flutter analyze` diagnostics are parsed by severity. Analyzer `error` diagnostics fail verification; `warning` and `info` diagnostics are recorded but do not fail the run. The aggregate `N issues found` count is not used as the pass/fail criterion. SQLite stores `analyzer_errors`, `analyzer_warnings`, and `analyzer_infos` for each run.
+
+## v10 run numbering
+
+v10 uses a version-scoped SQLite database (`~/.codex-lab/runs-v10.sqlite3`). A fresh v10 installation therefore starts at `RUN-001`; subsequent v10 runs increment from there without inheriting v9 numbering. The previous database is not deleted. Existing v9 databases are not modified.
