@@ -3,7 +3,7 @@ name = "codex-lab"
 version = "0.1.1"
 description = "Minimal experiment harness for measuring interactive coding-agent development"
 requires-python = ">=3.11"
-dependencies = ["pywinpty>=2.0.15; platform_system == \"Windows\""]
+dependencies = []
 
 [project.scripts]
 codex-lab = "codex_lab.cli:main"

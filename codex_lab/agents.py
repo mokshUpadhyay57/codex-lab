@@ -194,53 +194,127 @@ class ClaudeAdapter(AgentAdapter):
         # Anthropic documents `claude "query"` as starting the interactive REPL.
         return [info.executable, prompt]
 
-def _run_antigravity_interactive(info: AgentInfo, worktree: Path, prompt: str) -> int:
-    """Run agy in a real terminal and inject the initial prompt.
+def _inject_windows_console_input(text: str) -> bool:
+    """Inject keyboard events into the current Windows console input buffer.
 
-    Antigravity's normal `agy` mode is a TUI. A normal subprocess pipe is not
-    sufficient because the TUI expects a terminal/console. On Windows use
-    pywinpty (ConPTY) so codex-lab can type the initial prompt while the user
-    retains the live interactive TUI for subsequent interventions.
+    The child `agy` process inherits the same console as codex-lab, so input
+    events written here are consumed by the interactive TUI without putting a
+    Python PTY proxy between agy and the user's terminal.
     """
     if os.name != "nt":
-        # On POSIX, keep a normal attached terminal; stdin/stdout remain interactive.
-        p = subprocess.Popen([info.executable], cwd=worktree)
+        return False
+
+    STD_INPUT_HANDLE = -10
+    KEY_EVENT = 0x0001
+    VK_RETURN = 0x0D
+    SHIFT_PRESSED = 0x0010
+    LEFT_ALT_PRESSED = 0x0002
+
+    class CHAR_UNION(ctypes.Union):
+        _fields_ = [
+            ("UnicodeChar", ctypes.c_wchar),
+            ("AsciiChar", ctypes.c_char),
+        ]
+
+    class KEY_EVENT_RECORD(ctypes.Structure):
+        _fields_ = [
+            ("bKeyDown", ctypes.c_int),
+            ("wRepeatCount", ctypes.c_ushort),
+            ("wVirtualKeyCode", ctypes.c_ushort),
+            ("wVirtualScanCode", ctypes.c_ushort),
+            ("uChar", CHAR_UNION),
+            ("dwControlKeyState", ctypes.c_uint32),
+        ]
+
+    class EVENT_UNION(ctypes.Union):
+        _fields_ = [("KeyEvent", KEY_EVENT_RECORD)]
+
+    class INPUT_RECORD(ctypes.Structure):
+        _fields_ = [
+            ("EventType", ctypes.c_ushort),
+            ("Event", EVENT_UNION),
+        ]
+
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.GetStdHandle(STD_INPUT_HANDLE)
+    if not handle or handle == ctypes.c_void_p(-1).value:
+        return False
+
+    mode = ctypes.c_uint32()
+    if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+        return False
+
+    events = []
+
+    def add_key(ch: str, *, vk: int = 0, control_state: int = 0) -> None:
+        down = INPUT_RECORD()
+        down.EventType = KEY_EVENT
+        down.Event.KeyEvent.bKeyDown = 1
+        down.Event.KeyEvent.wRepeatCount = 1
+        down.Event.KeyEvent.wVirtualKeyCode = vk
+        down.Event.KeyEvent.wVirtualScanCode = 0
+        down.Event.KeyEvent.uChar.UnicodeChar = ch
+        down.Event.KeyEvent.dwControlKeyState = control_state
+
+        up = INPUT_RECORD()
+        up.EventType = KEY_EVENT
+        up.Event.KeyEvent.bKeyDown = 0
+        up.Event.KeyEvent.wRepeatCount = 1
+        up.Event.KeyEvent.wVirtualKeyCode = vk
+        up.Event.KeyEvent.wVirtualScanCode = 0
+        up.Event.KeyEvent.uChar.UnicodeChar = ch
+        up.Event.KeyEvent.dwControlKeyState = control_state
+        events.extend((down, up))
+
+    for ch in text:
+        if ch == "\n":
+            # Antigravity documents Shift+Enter as the prompt newline action.
+            add_key("\r", vk=VK_RETURN, control_state=SHIFT_PRESSED)
+        else:
+            add_key(ch)
+
+    # Submit the initial prompt.
+    add_key("\r", vk=VK_RETURN)
+
+    array_type = INPUT_RECORD * len(events)
+    records = array_type(*events)
+    written = ctypes.c_uint32()
+    ok = kernel32.WriteConsoleInputW(
+        handle,
+        ctypes.byref(records),
+        len(events),
+        ctypes.byref(written),
+    )
+    return bool(ok and written.value == len(events))
+
+
+def _run_antigravity_interactive(info: AgentInfo, worktree: Path, prompt: str) -> int:
+    """Launch the real agy TUI directly and inject the first prompt.
+
+    Windows normally gives child processes launched from PowerShell the same
+    console. We keep that arrangement intact: agy owns the terminal directly,
+    while WriteConsoleInputW queues the initial prompt into the shared console
+    input buffer. This avoids the v4 pywinpty read/print polling loop, which was
+    responsible for noticeable TUI latency and also did not proxy later human
+    keystrokes correctly.
+    """
+    if os.name == "nt":
+        try:
+            p = subprocess.Popen([info.executable], cwd=worktree)
+        except FileNotFoundError as exc:
+            raise AgentUnavailable(f"agy executable could not be started: {info.executable}") from exc
+
+        # Console input is queued, so agy can consume it after its TUI finishes
+        # initializing. No output forwarding or polling is required.
+        if not _inject_windows_console_input(prompt):
+            # The process is still a normal interactive agy process. Do not
+            # terminate it merely because automatic prompt injection is not
+            # available (for example when stdin is redirected).
+            print("[antigravity] automatic prompt injection unavailable; enter the initial prompt in the TUI.")
         return p.wait()
 
-    try:
-        from winpty import PtyProcess
-    except ImportError as exc:
-        raise AgentUnavailable(
-            "Antigravity interactive prompt injection on Windows requires "
-            "the 'pywinpty' package. Reinstall codex-lab with its dependencies."
-        ) from exc
-
-    proc = PtyProcess.spawn([info.executable], cwd=str(worktree))
-    sent = False
-    buffer = ""
-    deadline = time.monotonic() + 15.0
-
-    # Wait for the TUI prompt marker, then type the initial prompt + Enter.
-    # Keep forwarding terminal output so the user sees the normal Antigravity UI.
-    while proc.isalive():
-        try:
-            chunk = proc.read(4096)
-        except EOFError:
-            break
-        if chunk:
-            print(chunk, end="", flush=True)
-            if not sent:
-                buffer += chunk
-                # The prompt box is rendered with a leading ">" by the TUI.
-                if "\n>" in buffer or buffer.rstrip().endswith(">") or time.monotonic() > deadline:
-                    proc.write(prompt + "\r")
-                    sent = True
-        elif not sent and time.monotonic() > deadline:
-            proc.write(prompt + "\r")
-            sent = True
-        time.sleep(0.02)
-
-    return proc.exitstatus if proc.exitstatus is not None else 0
+    p = subprocess.Popen([info.executable], cwd=worktree)
+    return p.wait()
 
 
 class AntigravityAdapter(AgentAdapter):
