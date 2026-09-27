@@ -70,10 +70,3 @@ Existing Antigravity settings are preserved, duplicate workspace entries are avo
 The Git branch remains unique per experiment (`codex-lab/RUN-XXX`), so experiments remain isolated even though the filesystem path is reused. Before reuse, `codex-lab` runs `git worktree prune` and removes any stale registration occupying the stable slot. The default stable workspace root is `~/.codex-lab/workspaces`; override it with `CODEX_LAB_WORKTREE_ROOT` if needed.
 
 Because the stable slot is reset before a new run, do not rely on the previous run's uncommitted files remaining in that slot. Preserve anything you need before starting another experiment.
-
-### Antigravity interactive prompt handoff
-
-Antigravity runs are started with `--input-format stream-json --output-format stream-json`.
-`codex-lab` sends the initial prompt as a JSON `user` event through stdin, so the TUI does
-not wait for the operator to type the initial prompt. The process remains a continuous
-session, allowing subsequent human interaction and preserving intervention measurement.

@@ -15,17 +15,6 @@ class AgentUnavailable(RuntimeError):
     pass
 
 
-
-def _send_stream_prompt(proc, prompt):
-    """Send the initial user turn to an Antigravity stream-json session."""
-    import json
-    payload = {
-        "event": "user",
-        "message": {"content": prompt},
-    }
-    proc.stdin.write(json.dumps(payload) + "\n")
-    proc.stdin.flush()
-
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -85,15 +74,17 @@ class AgentAdapter:
         started_at = utc_now()
         args = self.launch_args(info, prompt)
         print(f"[{self.name}] starting interactive session in {worktree}")
-        if self.name == "antigravity":
-            print(f"[{self.name}] enter the initial prompt in the TUI:\n\n{prompt}\n")
         try:
-            p = subprocess.run(args, cwd=worktree)
+            if self.name == "antigravity":
+                returncode = _run_antigravity_interactive(info, worktree, prompt)
+            else:
+                p = subprocess.run(args, cwd=worktree)
+                returncode = p.returncode
         except FileNotFoundError as exc:
             raise AgentUnavailable(f"{self.name} executable could not be started: {info.executable}") from exc
         telemetry = self.collect_telemetry(before, prompt)
         return {
-            "returncode": p.returncode,
+            "returncode": returncode,
             "started_at": started_at,
             "ended_at": utc_now(),
             "duration_s": round(time.monotonic() - started, 3),
@@ -202,6 +193,54 @@ class ClaudeAdapter(AgentAdapter):
     def launch_args(self, info: AgentInfo, prompt: str) -> list[str]:
         # Anthropic documents `claude "query"` as starting the interactive REPL.
         return [info.executable, prompt]
+
+def _run_antigravity_interactive(info: AgentInfo, worktree: Path, prompt: str) -> int:
+    """Run agy in a real terminal and inject the initial prompt.
+
+    Antigravity's normal `agy` mode is a TUI. A normal subprocess pipe is not
+    sufficient because the TUI expects a terminal/console. On Windows use
+    pywinpty (ConPTY) so codex-lab can type the initial prompt while the user
+    retains the live interactive TUI for subsequent interventions.
+    """
+    if os.name != "nt":
+        # On POSIX, keep a normal attached terminal; stdin/stdout remain interactive.
+        p = subprocess.Popen([info.executable], cwd=worktree)
+        return p.wait()
+
+    try:
+        from winpty import PtyProcess
+    except ImportError as exc:
+        raise AgentUnavailable(
+            "Antigravity interactive prompt injection on Windows requires "
+            "the 'pywinpty' package. Reinstall codex-lab with its dependencies."
+        ) from exc
+
+    proc = PtyProcess.spawn([info.executable], cwd=str(worktree))
+    sent = False
+    buffer = ""
+    deadline = time.monotonic() + 15.0
+
+    # Wait for the TUI prompt marker, then type the initial prompt + Enter.
+    # Keep forwarding terminal output so the user sees the normal Antigravity UI.
+    while proc.isalive():
+        try:
+            chunk = proc.read(4096)
+        except EOFError:
+            break
+        if chunk:
+            print(chunk, end="", flush=True)
+            if not sent:
+                buffer += chunk
+                # The prompt box is rendered with a leading ">" by the TUI.
+                if "\n>" in buffer or buffer.rstrip().endswith(">") or time.monotonic() > deadline:
+                    proc.write(prompt + "\r")
+                    sent = True
+        elif not sent and time.monotonic() > deadline:
+            proc.write(prompt + "\r")
+            sent = True
+        time.sleep(0.02)
+
+    return proc.exitstatus if proc.exitstatus is not None else 0
 
 
 class AntigravityAdapter(AgentAdapter):
