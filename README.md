@@ -86,3 +86,8 @@ The previous v7 interactive PTY implementation remains in `codex_lab/agents.py` 
 
 Environment variable:
 - `CODEX_LAB_ANTIGRAVITY_PRINT_TIMEOUT` — Antigravity `--print-timeout`, default `60m`.
+
+
+## v8 run numbering
+
+v8 uses a version-scoped SQLite database (`~/.codex-lab/runs-v8.sqlite3`). A fresh v8 installation therefore starts at `RUN-001`; subsequent v8 runs increment from there without inheriting v7 numbering. The previous database is not deleted.

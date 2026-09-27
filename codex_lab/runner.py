@@ -13,6 +13,7 @@ from . import agents, git, verifier
 from .database import add_intervention, connect, get_interventions, get_run, insert_run, update_run
 
 MAX_RETRIES = 3
+RUN_DB_FILENAME = "runs-v8.sqlite3"
 
 
 def now() -> str:
@@ -24,7 +25,7 @@ def db_path(repo: Path | None = None) -> Path:
     configured = os.environ.get("CODEX_LAB_DB")
     if configured:
         return Path(configured).expanduser().resolve()
-    return Path.home() / ".codex-lab" / "runs.sqlite3"
+    return Path.home() / ".codex-lab" / RUN_DB_FILENAME
 
 
 def next_run_id(conn) -> str:
