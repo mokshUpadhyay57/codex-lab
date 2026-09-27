@@ -194,82 +194,142 @@ class ClaudeAdapter(AgentAdapter):
         # Anthropic documents `claude "query"` as starting the interactive REPL.
         return [info.executable, prompt]
 
-def _send_windows_keyboard_text(text: str) -> bool:
-    """Type text into the foreground terminal using the Windows input API."""
+def _ag_debug(message: str) -> None:
+    """Write low-overhead Antigravity bridge diagnostics to stderr and a log file."""
+    stamp = datetime.now().astimezone().isoformat(timespec="milliseconds")
+    line = f"[antigravity-debug {stamp}] {message}\n"
+    print(line, end="", file=__import__("sys").stderr, flush=True)
+    try:
+        log_dir = Path.home() / ".codex-lab" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        with (log_dir / "antigravity-input.log").open("a", encoding="utf-8") as fh:
+            fh.write(line)
+    except OSError:
+        pass
+
+
+def _strip_ansi(text: str) -> str:
+    import re
+    return re.sub(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])", "", text)
+
+
+def _forward_windows_console_input(proc, stop_event) -> None:
+    """Forward user key events from the real Windows console into the PTY."""
     if os.name != "nt":
-        return False
-
-    class KEYBDINPUT(ctypes.Structure):
-        _fields_ = [
-            ("wVk", ctypes.c_ushort),
-            ("wScan", ctypes.c_ushort),
-            ("dwFlags", ctypes.c_uint32),
-            ("time", ctypes.c_uint32),
-            ("dwExtraInfo", ctypes.c_void_p),
-        ]
-
-    class INPUT_UNION(ctypes.Union):
-        _fields_ = [("ki", KEYBDINPUT)]
-
-    class INPUT(ctypes.Structure):
-        _fields_ = [("type", ctypes.c_uint32), ("u", INPUT_UNION)]
-
-    KEYEVENTF_UNICODE = 0x0004
-    KEYEVENTF_KEYUP = 0x0002
-    INPUT_KEYBOARD = 1
-    VK_RETURN = 0x0D
-
-    events = []
-    for ch in text:
-        if ch == "\n":
-            # Keep multiline prompts as explicit Enter/newline input.
-            vk = KEYBDINPUT(0, VK_RETURN, 0, 0, None)
-            events.append(INPUT(INPUT_KEYBOARD, INPUT_UNION(ki=vk)))
-            events.append(INPUT(INPUT_KEYBOARD, INPUT_UNION(ki=KEYBDINPUT(0, VK_RETURN, KEYEVENTF_KEYUP, 0, None))))
-            continue
-        down = KEYBDINPUT(0, ord(ch), KEYEVENTF_UNICODE, 0, None)
-        up = KEYBDINPUT(0, ord(ch), KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, 0, None)
-        events.append(INPUT(INPUT_KEYBOARD, INPUT_UNION(ki=down)))
-        events.append(INPUT(INPUT_KEYBOARD, INPUT_UNION(ki=up)))
-
-    # Submit the prompt with a real Enter key.
-    events.append(INPUT(INPUT_KEYBOARD, INPUT_UNION(ki=KEYBDINPUT(VK_RETURN, 0, 0, 0, None))))
-    events.append(INPUT(INPUT_KEYBOARD, INPUT_UNION(ki=KEYBDINPUT(VK_RETURN, 0, KEYEVENTF_KEYUP, 0, None))))
-
-    array_type = INPUT * len(events)
-    records = array_type(*events)
-    sent = ctypes.windll.user32.SendInput(len(events), ctypes.byref(records), ctypes.sizeof(INPUT))
-    return sent == len(events)
+        return
+    import msvcrt
+    # This lightweight fallback handles normal typing plus Enter/Backspace.
+    # Arrow/function keys are translated to common ANSI sequences.
+    special = {
+        "H": "\x1b[A", "P": "\x1b[B", "K": "\x1b[D", "M": "\x1b[C",
+        "G": "\x1b[H", "O": "\x1b[F", "I": "\x1b[5~", "Q": "\x1b[6~",
+    }
+    while not stop_event.is_set() and proc.isalive():
+        try:
+            if not msvcrt.kbhit():
+                time.sleep(0.005)
+                continue
+            ch = msvcrt.getwch()
+            if ch in ("\x00", "\xe0"):
+                code = msvcrt.getwch()
+                proc.write(special.get(code, ""))
+            elif ch == "\r":
+                proc.write("\r")
+            elif ch == "\x03":
+                proc.write("\x03")
+            elif ch == "\x08":
+                proc.write("\x7f")
+            elif ch:
+                proc.write(ch)
+        except (EOFError, OSError, Exception):
+            break
 
 
 def _run_antigravity_interactive(info: AgentInfo, worktree: Path, prompt: str) -> int:
-    """Launch the real agy TUI directly and type the first prompt into it.
-
-    Unlike v4, there is no PTY read/print loop. Unlike v5's console-buffer
-    injection, this uses Windows' normal keyboard-input path, which works with
-    Windows Terminal/PowerShell's ConPTY-backed console sessions.
-    """
+    """Run agy in a ConPTY, inject the initial prompt through the PTY, then proxy I/O."""
     if os.name != "nt":
         p = subprocess.Popen([info.executable], cwd=worktree)
         return p.wait()
 
     try:
-        p = subprocess.Popen([info.executable], cwd=worktree)
-    except FileNotFoundError as exc:
-        raise AgentUnavailable(f"agy executable could not be started: {info.executable}") from exc
+        from winpty import PtyProcess
+    except ImportError as exc:
+        raise AgentUnavailable("Antigravity interactive mode requires pywinpty on Windows") from exc
 
-    # Give the TUI time to create its prompt panel. The keyboard events are then
-    # indistinguishable from the user typing into the prompt box.
+    _ag_debug(f"launching agy executable={info.executable!r} cwd={str(worktree)!r}")
+    proc = PtyProcess.spawn([info.executable], cwd=str(worktree))
+    _ag_debug(f"PTY started pid={getattr(proc, 'pid', 'unknown')}")
+
     import threading
+    import sys
 
-    def inject() -> None:
-        time.sleep(float(os.environ.get("CODEX_LAB_ANTIGRAVITY_PROMPT_DELAY", "1.5")))
-        if p.poll() is None:
-            if not _send_windows_keyboard_text(prompt):
-                print("[antigravity] automatic prompt injection failed; enter the initial prompt in the TUI.")
+    stop_event = threading.Event()
+    prompt_sent = threading.Event()
+    ready_event = threading.Event()
+    output_buffer = ""
+    output_lock = threading.Lock()
+    max_ready_wait = float(os.environ.get("CODEX_LAB_ANTIGRAVITY_READY_TIMEOUT", "20"))
+    delay = float(os.environ.get("CODEX_LAB_ANTIGRAVITY_PROMPT_DELAY", "0"))
+    deadline = time.monotonic() + max_ready_wait
 
-    threading.Thread(target=inject, name="antigravity-prompt-injector", daemon=True).start()
-    return p.wait()
+    def inject_when_ready() -> None:
+        nonlocal output_buffer
+        if delay > 0:
+            _ag_debug(f"configured prompt delay={delay}s")
+            time.sleep(delay)
+        while proc.isalive() and not prompt_sent.is_set():
+            if time.monotonic() >= deadline:
+                _ag_debug("readiness timeout reached; injecting prompt anyway")
+                break
+            if ready_event.wait(0.05):
+                break
+        if not proc.isalive() or prompt_sent.is_set():
+            return
+        try:
+            # Newline is the Enter key for the PTY; this is the actual input path to agy.
+            data = prompt + "\r"
+            _ag_debug(f"injecting initial prompt via PTY.write chars={len(prompt)} enter=True")
+            proc.write(data)
+            prompt_sent.set()
+            _ag_debug("initial prompt PTY.write completed")
+        except Exception as exc:
+            _ag_debug(f"initial prompt PTY.write FAILED: {type(exc).__name__}: {exc}")
+            print("[antigravity] automatic prompt injection failed; enter the initial prompt in the TUI.")
+
+    def reader() -> None:
+        nonlocal output_buffer
+        while proc.isalive() and not stop_event.is_set():
+            try:
+                chunk = proc.read(16384)
+            except EOFError:
+                break
+            except Exception as exc:
+                _ag_debug(f"PTY.read FAILED: {type(exc).__name__}: {exc}")
+                break
+            if not chunk:
+                continue
+            sys.stdout.write(chunk)
+            sys.stdout.flush()
+            with output_lock:
+                output_buffer = (output_buffer + chunk)[-12000:]
+                clean = _strip_ansi(output_buffer)
+            # Antigravity's interactive prompt normally ends with a > input marker.
+            if not ready_event.is_set() and ("\n>" in clean or clean.rstrip().endswith(">")):
+                ready_event.set()
+                _ag_debug("detected agy input prompt marker '>'; initial prompt can be injected")
+
+    reader_thread = threading.Thread(target=reader, name="antigravity-pty-reader", daemon=True)
+    input_thread = threading.Thread(target=_forward_windows_console_input, args=(proc, stop_event), name="antigravity-console-input", daemon=True)
+    injector_thread = threading.Thread(target=inject_when_ready, name="antigravity-prompt-injector", daemon=True)
+    reader_thread.start()
+    input_thread.start()
+    injector_thread.start()
+
+    _ag_debug("interactive bridge started: PTY output -> terminal; console input -> PTY")
+    while proc.isalive():
+        time.sleep(0.05)
+    stop_event.set()
+    return proc.exitstatus if proc.exitstatus is not None else 0
 
 
 class AntigravityAdapter(AgentAdapter):

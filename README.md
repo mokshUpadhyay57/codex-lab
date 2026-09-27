@@ -72,3 +72,8 @@ Existing Antigravity settings are preserved, duplicate workspace entries are avo
 The Git branch remains unique per experiment (`codex-lab/RUN-XXX`), so experiments remain isolated even though the filesystem path is reused. Before reuse, `codex-lab` runs `git worktree prune` and removes any stale registration occupying the stable slot. The default stable workspace root is `~/.codex-lab/workspaces`; override it with `CODEX_LAB_WORKTREE_ROOT` if needed.
 
 Because the stable slot is reset before a new run, do not rely on the previous run's uncommitted files remaining in that slot. Preserve anything you need before starting another experiment.
+
+
+### Antigravity debugging
+
+Interactive Antigravity uses a Windows PTY bridge. Diagnostics are printed with `[antigravity-debug ...]` and appended to `~/.codex-lab/logs/antigravity-input.log`. The log records launch, PTY PID, readiness detection, prompt injection method, character count, and failures without logging the prompt contents.
