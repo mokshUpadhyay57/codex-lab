@@ -67,7 +67,7 @@ For Antigravity runs, `codex-lab` uses a **stable worktree path per repository a
 
 `~/.gemini/antigravity-cli/settings.json` → `trustedWorkspaces`
 
-Existing Antigravity settings are preserved, duplicate workspace entries are avoided, and the file is updated atomically. No headless mode or `--dangerously-skip-permissions` flag is used.
+Existing Antigravity settings are preserved, duplicate workspace entries are avoided, and the file is updated atomically. The automated headless stream path uses `--dangerously-skip-permissions` so Antigravity can execute without interactive permission prompts; the interactive path is unchanged.
 
 The Git branch remains unique per experiment (`codex-lab/RUN-XXX`), so experiments remain isolated even though the filesystem path is reused. Before reuse, `codex-lab` runs `git worktree prune` and removes any stale registration occupying the stable slot. The default stable workspace root is `~/.codex-lab/workspaces`; override it with `CODEX_LAB_WORKTREE_ROOT` if needed.
 
@@ -78,9 +78,9 @@ Because the stable slot is reset before a new run, do not rely on the previous r
 
 Interactive Antigravity uses a Windows PTY bridge. Diagnostics are printed with `[antigravity-debug ...]` and appended to `~/.codex-lab/logs/antigravity-input.log`. The log records launch, PTY PID, readiness detection, prompt injection method, character count, and failures without logging the prompt contents.
 
-## Antigravity automated mode (v8)
+## Antigravity automated mode (v9)
 
-The default `--agent antigravity` run now uses Antigravity's documented headless `--print --output-format stream-json` protocol. The adapter reads the terminal `result` event, records token usage and tool-step counts, and lets `agy` exit normally; no `/exit` is required and this automated path does not use pywinpty.
+The default `--agent antigravity` run uses Antigravity's documented headless `--print --output-format stream-json` protocol with `--dangerously-skip-permissions`. The adapter reads the terminal `result` event, records token usage and tool-step counts, and lets `agy` exit normally; no `/exit` is required and this automated path does not use pywinpty.
 
 The previous v7 interactive PTY implementation remains in `codex_lab/agents.py` as `_run_antigravity_interactive` for future/manual interactive experiments.
 
@@ -88,6 +88,6 @@ Environment variable:
 - `CODEX_LAB_ANTIGRAVITY_PRINT_TIMEOUT` — Antigravity `--print-timeout`, default `60m`.
 
 
-## v8 run numbering
+## v9 run numbering
 
-v8 uses a version-scoped SQLite database (`~/.codex-lab/runs-v8.sqlite3`). A fresh v8 installation therefore starts at `RUN-001`; subsequent v8 runs increment from there without inheriting v7 numbering. The previous database is not deleted.
+v9 uses a version-scoped SQLite database (`~/.codex-lab/runs-v9.sqlite3`). A fresh v9 installation therefore starts at `RUN-001`; subsequent v9 runs increment from there without inheriting v8 numbering. The previous database is not deleted.

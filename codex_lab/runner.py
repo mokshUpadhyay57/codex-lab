@@ -13,7 +13,7 @@ from . import agents, git, verifier
 from .database import add_intervention, connect, get_interventions, get_run, insert_run, update_run
 
 MAX_RETRIES = 3
-RUN_DB_FILENAME = "runs-v8.sqlite3"
+RUN_DB_FILENAME = "runs-v9.sqlite3"
 
 
 def now() -> str:

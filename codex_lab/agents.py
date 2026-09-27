@@ -278,6 +278,7 @@ def _run_antigravity_stream(info: AgentInfo, worktree: Path, prompt: str) -> dic
         prompt,
         "--output-format",
         "stream-json",
+        "--dangerously-skip-permissions",
         "--print-timeout",
         timeout,
     ]
