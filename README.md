@@ -94,3 +94,19 @@ For Flutter projects, `flutter analyze --no-fatal-infos --no-fatal-warnings` is 
 ## v10 run numbering
 
 v10 uses a version-scoped SQLite database (`~/.codex-lab/runs-v10.sqlite3`). A fresh v10 installation therefore starts at `RUN-001`; subsequent v10 runs increment from there without inheriting v9 numbering. The previous database is not deleted. Existing v9 databases are not modified.
+
+## Version History
+
+- v10.2: update Flutter analyzer and timing
+- v10.1: improve verification failure reporting
+- v10: improve Flutter analyzer handling
+- v9: add headless permissions and telemetry
+- v8.1: improve version numbering
+- v8: add Antigravity stream automation
+- v7: add Antigravity integration
+- v6: add development metrics
+- v5: add retry and recovery
+- v4: add SQLite persistence
+- v3: add independent verification
+- v2: add Git worktree isolation
+- v1: initial codex-lab CLI
